@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
+from pathlib import Path
+from email.utils import parsedate_to_datetime
+from pyquery import PyQuery as Query
+
 import os
 import sys
 import threading
 import queue
-import traceback
-from pathlib import Path
-from email.utils import parsedate_to_datetime
+import requests
 import re
 import traceback
-
-import requests
-from pyquery import PyQuery as pq
 
 
 BASE_URL = os.getenv("TUNASYNC_UPSTREAM_URL", "https://pkgs.tailscale.com/")
 WORKING_DIR = os.getenv("TUNASYNC_WORKING_DIR")
-SYNC_USER_AGENT = os.getenv("SYNC_USER_AGENT", "Tailscale Syncing Tool (https://github.com/ltzXiaoYanMo/tunasync-scripts)/1.0")
+SYNC_USER_AGENT = os.getenv(
+    "SYNC_USER_AGENT",
+    "Tailscale Syncing Tool (https://github.com/ltzXiaoYanMo/tunasync-scripts)/1.0",
+)
 
 # connect and read timeout value
 TIMEOUT_OPTION = (7, 10)
@@ -24,42 +26,42 @@ requests.utils.default_user_agent = lambda: SYNC_USER_AGENT
 # retries
 requests.adapters.DEFAULT_RETRIES = 3
 
-REL_URL_RE = re.compile(r"https?:\/\/.+?\/(.+?)(\/index\.html)?$")
+REL_URL_RE = re.compile(r"https?://.+?/(.+?)(/index\.html)?$")
 
 
 class RemoteSite:
 
     def __init__(self, base_url=BASE_URL):
-        if not base_url.endswith('/'):
-            base_url = base_url + '/'
+        if not base_url.endswith("/"):
+            base_url = base_url + "/"
         self.base_url = base_url
         self.meta_urls = []
 
     @staticmethod
     def is_metafile_url(url):
-        deb_dists = ('debian', 'ubuntu', 'raspbian')
-        rpm_dists = ('fedora', 'centos')
+        deb_dists = ("debian", "ubuntu", "raspbian")
+        rpm_dists = ("fedora", "centos")
 
         for dist in deb_dists:
-            if '/'+dist+'/' not in url:
+            if "/" + dist + "/" not in url:
                 continue
-            if '/Contents-' in url:
+            if "/Contents-" in url:
                 return True
-            if '/binary-' in url:
+            if "/binary-" in url:
                 return True
-            if 'Release' in url:
+            if "Release" in url:
                 return True
 
         for dist in rpm_dists:
-            if '/'+dist+'/' not in url:
+            if "/" + dist + "/" not in url:
                 continue
-            if '/repodata/' in url:
+            if "/repodata/" in url:
                 return True
 
         return False
 
     def recursive_get_filelist(self, base_url, filter_meta=False):
-        if not base_url.endswith('/'):
+        if not base_url.endswith("/"):
             yield base_url
             return
 
@@ -74,7 +76,7 @@ class RemoteSite:
                     # here we create a symlink on the fly
                     from_dir = REL_URL_RE.findall(base_url)[0][0]
                     to_dir = REL_URL_RE.findall(r.url)[0][0]
-                    yield (from_dir, to_dir)  # tuple -> create symlink
+                    yield from_dir, to_dir  # tuple -> create symlink
                     return
         except Exception as err:
             print("Panic: failed to get file list, error:", err)
@@ -83,21 +85,21 @@ class RemoteSite:
         if not r.ok:
             return
 
-        d = pq(r.text)
-        for link in d('a'):
-            if link.text.startswith('..'):
+        d = Query(r.text)
+        for link in d("a"):
+            if link.text.startswith(".."):
                 continue
             href = base_url + link.text
             if filter_meta and self.is_metafile_url(href):
                 self.meta_urls.append(href)
-            elif link.text.endswith('/'):
+            elif link.text.endswith("/"):
                 yield from self.recursive_get_filelist(href, filter_meta=filter_meta)
             else:
                 yield href
 
-    def relpath(self, url):
-        assert url.startswith(self.base_url)
-        return url[len(self.base_url):]
+    def relpath(self, rel_url):
+        assert rel_url.startswith(self.base_url)
+        return rel_url[len(self.base_url) :]
 
     @property
     def files(self):
@@ -110,9 +112,8 @@ def requests_download(remote_url: str, dst_file: Path):
     # NOTE the stream=True parameter below
     with requests.get(remote_url, stream=True) as r:
         r.raise_for_status()
-        remote_ts = parsedate_to_datetime(
-            r.headers['last-modified']).timestamp()
-        with open(dst_file, 'wb') as f:
+        remote_ts = parsedate_to_datetime(r.headers["last-modified"]).timestamp()
+        with open(dst_file, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024**2):
                 if chunk:  # filter out keep-alive new chunks
                     f.write(chunk)
@@ -121,6 +122,7 @@ def requests_download(remote_url: str, dst_file: Path):
 
 
 def downloading_worker(q):
+    global url
     while True:
         item = q.get()
         if item is None:
@@ -131,22 +133,25 @@ def downloading_worker(q):
             if dst_file.is_file():
                 print("checking", url, flush=True)
                 r = requests.head(url, timeout=TIMEOUT_OPTION, allow_redirects=True)
-                remote_filesize = int(r.headers['content-length'])
-                remote_date = parsedate_to_datetime(r.headers['last-modified'])
+                remote_filesize = int(r.headers["content-length"])
+                remote_date = parsedate_to_datetime(r.headers["last-modified"])
                 stat = dst_file.stat()
                 local_filesize = stat.st_size
                 local_mtime = stat.st_mtime
 
-                if remote_filesize == local_filesize and remote_date.timestamp() == local_mtime:
+                if (
+                    remote_filesize == local_filesize
+                    and remote_date.timestamp() == local_mtime
+                ):
                     print("skipping", dst_file.relative_to(working_dir), flush=True)
                     continue
 
                 dst_file.unlink()
             print("downloading", url, flush=True)
             requests_download(url, dst_file)
-        except Exception:
+        except Exception as err:
             traceback.print_exc()
-            print("Failed to download", url, flush=True)
+            print("Failed to download", url, "error:", err, flush=True)
             if dst_file.is_file():
                 dst_file.unlink()
         finally:
@@ -156,19 +161,26 @@ def downloading_worker(q):
 def create_workers(n):
     task_queue = queue.Queue()
     for i in range(n):
-        t = threading.Thread(target=downloading_worker, args=(task_queue, ))
+        t = threading.Thread(target=downloading_worker, args=(task_queue,))
         t.start()
     return task_queue
+
 
 def create_symlink(from_dir: Path, to_dir: Path):
     to_dir = to_dir.relative_to(from_dir.parent)
     if from_dir.exists():
         if from_dir.is_symlink():
-            resolved_symlink = from_dir.resolve().relative_to(from_dir.parent.absolute())
+            resolved_symlink = from_dir.resolve().relative_to(
+                from_dir.parent.absolute()
+            )
             if resolved_symlink != to_dir:
-                print(f"WARN: The symlink {from_dir} dest changed from {resolved_symlink} to {to_dir}.")
+                print(
+                    f"WARN: The symlink {from_dir} dest changed from {resolved_symlink} to {to_dir}."
+                )
         else:
-            print(f"WARN: The symlink {from_dir} exists on disk but it is not a symlink.")
+            print(
+                f"WARN: The symlink {from_dir} exists on disk but it is not a symlink."
+            )
     else:
         if from_dir.is_symlink():
             print(f"WARN: The symlink {from_dir} is probably invalid.")
@@ -177,15 +189,21 @@ def create_symlink(from_dir: Path, to_dir: Path):
             from_dir.parent.mkdir(parents=True, exist_ok=True)
             from_dir.symlink_to(to_dir)
 
+
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default=BASE_URL)
     parser.add_argument("--working-dir", default=WORKING_DIR)
-    parser.add_argument("--workers", default=1, type=int,
-                        help='number of concurrent downloading jobs')
-    parser.add_argument("--fast-skip", action='store_true',
-                        help='do not verify size and timestamp of existing package files')
+    parser.add_argument(
+        "--workers", default=1, type=int, help="number of concurrent downloading jobs"
+    )
+    parser.add_argument(
+        "--fast-skip",
+        action="store_true",
+        help="do not verify size and timestamp of existing package files",
+    )
     args = parser.parse_args()
 
     if args.working_dir is None:
@@ -205,8 +223,15 @@ def main():
             remote_filelist.append(dst_file.relative_to(working_dir))
 
             if dst_file.is_file():
-                if args.fast_skip and dst_file.suffix in ['.rpm', '.deb', '.tgz', '.zip']:
-                    print("fast skipping", dst_file.relative_to(working_dir), flush=True)
+                if args.fast_skip and dst_file.suffix in [
+                    ".rpm",
+                    ".deb",
+                    ".tgz",
+                    ".zip",
+                ]:
+                    print(
+                        "fast skipping", dst_file.relative_to(working_dir), flush=True
+                    )
                     continue
             else:
                 dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -220,7 +245,7 @@ def main():
         task_queue.put(None)
 
     local_filelist = []
-    for local_file in working_dir.glob('**/*'):
+    for local_file in working_dir.glob("**/*"):
         if local_file.is_file():
             local_filelist.append(local_file.relative_to(working_dir))
 
