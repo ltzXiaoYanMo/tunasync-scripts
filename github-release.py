@@ -13,7 +13,7 @@ import requests
 
 BASE_URL = os.getenv("TUNASYNC_UPSTREAM_URL", "https://api-gh.1l1.icu/repos/")
 WORKING_DIR = os.getenv("TUNASYNC_WORKING_DIR")
-CONFIG = os.getenv("GITHUB_RELEASE_CONFIG", "github-release.json")
+CONFIG = os.getenv("GITHUB_RELEASE_CONFIG", "./github-release.json")
 REPOS = []
 
 # connect and read timeout value
