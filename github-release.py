@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
+from pathlib import Path
+from datetime import datetime
+
 import os
-import sys
 import threading
 import traceback
 import queue
-from pathlib import Path
-from datetime import datetime
 import tempfile
 import json
-import re
 import requests
 
 
-BASE_URL = os.getenv("TUNASYNC_UPSTREAM_URL", "https://api.github.com/repos/")
+BASE_URL = os.getenv("TUNASYNC_UPSTREAM_URL", "https://api-gh.1l1.icu/repos/")
 WORKING_DIR = os.getenv("TUNASYNC_WORKING_DIR")
-CONFIG = os.getenv("GITHUB_RELEASE_CONFIG", "/opt/tunasync-scripts/github-release.json")
+CONFIG = os.getenv("GITHUB_RELEASE_CONFIG", "github-release.json")
 REPOS = []
 
 # connect and read timeout value
@@ -70,7 +69,6 @@ def downloading_worker(q):
             break
 
         url, dst_file, working_dir, updated, remote_size = item
-        url = "https://proxy-gh.1l1.icu/" + url
 
         print("downloading", url, "to",
               dst_file.relative_to(working_dir), flush=True)
@@ -204,23 +202,11 @@ def main():
         print(f"syncing {repo} to {repo_dir}")
 
         try:
-            headers = {"Accept": "application/vnd.github+json"}
-            releases = []
-            url_str = f"{args.base_url}{repo}/releases"
-            pattern = re.compile(r'.*<(.*?)>;\s*rel="next"')
-            while url_str:
-                r = github_get(url_str, headers=headers)
-                r.raise_for_status()
-                releases.extend(r.json())
-                next_url = re.findall(pattern=pattern,string=r.headers["link"])
-                if versions > 0 and len(releases) > versions:
-                    url_str = None
-                elif next_url:
-                    url_str = next_url[0]
-                else:
-                    url_str = None
+            r = github_get(f"{args.base_url}{repo}/releases")
+            r.raise_for_status()
+            releases = r.json()
         except:
-            traceback.print_exc()
+            print(f"Error: cannot download metadata for {repo}:\n{traceback.format_exc()}")
             break
 
         n_downloaded = 0
@@ -235,7 +221,7 @@ def main():
                     # create a symbolic link to the latest release folder
                     link_latest(name, repo_dir)
                 n_downloaded += 1
-                if versions > 0 and n_downloaded >= versions:
+                if 0 < versions <= n_downloaded:
                     break
         if n_downloaded == 0:
             print(f"Error: No release version found for {repo}")
@@ -249,6 +235,7 @@ def main():
     for i in range(args.workers):
         task_queue.put(None)
 
+    # XXX: this does not work because `cleaning` is always False when `REPO`` is not empty
     if cleaning:
         local_filelist = []
         for local_file in working_dir.glob('**/*'):
@@ -272,6 +259,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# vim: ts=4 sw=4 sts=4 expandtab
